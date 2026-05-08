@@ -29,11 +29,11 @@ use crate::settings::{
     AwsBedrockCredentialsEnabled, CanUseWarpCreditsWithByok, CodeSettings, CodebaseContextEnabled,
     FileBasedMcpEnabled, GitOperationsAutogenEnabled, IncludeAgentCommandsInHistory,
     IntelligentAutosuggestionsEnabled, MemoryEnabled, NLDInTerminalEnabled,
-    NaturalLanguageAutosuggestionsEnabled, OrchestrationEnabled, RuleSuggestionsEnabled,
-    SharedBlockTitleGenerationEnabled, ShouldRenderCLIAgentToolbar,
-    ShouldRenderUseAgentToolbarForUserCommands, ShouldShowOzUpdatesInZeroState, ShowAgentTips,
-    ShowConversationHistory, ShowHintText, ThinkingDisplayMode, VoiceInputEnabled,
-    WarpDriveContextEnabled,
+    NaturalLanguageAutosuggestionsEnabled, OllamaAllowRemoteHosts, OllamaEnabled,
+    OrchestrationEnabled, RuleSuggestionsEnabled, SharedBlockTitleGenerationEnabled,
+    ShouldRenderCLIAgentToolbar, ShouldRenderUseAgentToolbarForUserCommands,
+    ShouldShowOzUpdatesInZeroState, ShowAgentTips, ShowConversationHistory, ShowHintText,
+    ThinkingDisplayMode, VoiceInputEnabled, WarpDriveContextEnabled,
 };
 use crate::terminal::session_settings::{SessionSettings, SessionSettingsChangedEvent};
 use crate::terminal::CLIAgent;
@@ -1511,6 +1511,9 @@ impl AISettingsPageView {
                 widgets.push(Box::new(CLIAgentWidget::default()));
                 widgets.push(Box::new(ApiKeysWidget::new(ctx)));
                 widgets.push(Box::new(AwsBedrockWidget::new(ctx)));
+                if FeatureFlag::OllamaProvider.is_enabled() {
+                    widgets.push(Box::new(OllamaSettingsWidget::new(ctx)));
+                }
                 widgets.push(Box::new(AgentAttributionWidget::default()));
                 widgets.push(Box::new(OtherAIWidget::default()));
                 if FeatureFlag::AgentModeComputerUse.is_enabled() {
@@ -1551,6 +1554,9 @@ impl AISettingsPageView {
                 }
                 widgets.push(Box::new(ApiKeysWidget::new(ctx)));
                 widgets.push(Box::new(AwsBedrockWidget::new(ctx)));
+                if FeatureFlag::OllamaProvider.is_enabled() {
+                    widgets.push(Box::new(OllamaSettingsWidget::new(ctx)));
+                }
                 widgets.push(Box::new(AgentAttributionWidget::default()));
                 widgets.push(Box::new(OtherAIWidget::default()));
                 if FeatureFlag::AgentModeComputerUse.is_enabled() {
@@ -2263,6 +2269,9 @@ pub enum AISettingsPageAction {
     ToggleAwsBedrockAutoLogin,
     ToggleAwsBedrockCredentialsEnabled,
     RefreshAwsBedrockCredentials,
+    ToggleOllamaEnabled,
+    ToggleOllamaAllowRemoteHosts,
+    RefreshOllamaModels,
     ToggleCloudAgentComputerUse,
     ToggleFileBasedMcp,
     ToggleIncludeAgentCommandsInHistory,
@@ -2958,6 +2967,26 @@ impl TypedActionView for AISettingsPageView {
                 #[cfg(not(target_family = "wasm"))]
                 ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
                     drop(refresh_aws_credentials(manager, ctx));
+                });
+                ctx.notify();
+            }
+            AISettingsPageAction::ToggleOllamaEnabled => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.ollama_enabled.toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            AISettingsPageAction::ToggleOllamaAllowRemoteHosts => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings
+                        .ollama_allow_remote_hosts
+                        .toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            AISettingsPageAction::RefreshOllamaModels => {
+                LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
+                    prefs.refresh_ollama_models(ctx);
                 });
                 ctx.notify();
             }
@@ -7082,6 +7111,254 @@ impl SettingsWidget for AwsBedrockWidget {
     }
 }
 
+// ============================================================================
+// Ollama provider settings
+// ============================================================================
+
+/// Settings panel for the local Ollama integration.
+///
+/// Surfaces an enable toggle, the daemon base URL, the loopback opt-out toggle,
+/// and a "Refresh models" button. Other Ollama settings (`keep_alive`,
+/// `selected_models`) remain TOML-editable for power users; we'll surface them
+/// in the UI as the integration matures.
+struct OllamaSettingsWidget {
+    base_url_editor: ViewHandle<EditorView>,
+    enabled_toggle: SwitchStateHandle,
+    allow_remote_toggle: SwitchStateHandle,
+    refresh_models_button: ViewHandle<ActionButton>,
+}
+
+impl OllamaSettingsWidget {
+    fn new(ctx: &mut ViewContext<<Self as SettingsWidget>::View>) -> Self {
+        let ai_settings = AISettings::as_ref(ctx);
+        let is_any_ai_enabled = ai_settings.is_any_ai_enabled(ctx);
+        let is_ollama_enabled = *ai_settings.ollama_enabled;
+        let is_section_enabled = is_any_ai_enabled && is_ollama_enabled;
+
+        let initial_base_url = ai_settings.ollama_base_url.value().clone();
+
+        let base_url_editor = ctx.add_typed_action_view(move |ctx| {
+            let appearance = Appearance::as_ref(ctx);
+            let options = SingleLineEditorOptions {
+                is_password: false,
+                text: TextOptions {
+                    font_size_override: Some(appearance.ui_font_size()),
+                    font_family_override: Some(appearance.monospace_font_family()),
+                    text_colors_override: Some(TextColors {
+                        default_color: appearance.theme().active_ui_text_color(),
+                        disabled_color: appearance.theme().disabled_ui_text_color(),
+                        hint_color: appearance.theme().disabled_ui_text_color(),
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut editor = EditorView::single_line(options, ctx);
+            editor.set_placeholder_text("http://localhost:11434", ctx);
+            editor.set_buffer_text(&initial_base_url, ctx);
+            editor
+        });
+        AISettingsPageView::update_editor_interaction_state(
+            base_url_editor.clone(),
+            is_section_enabled,
+            ctx,
+        );
+        ctx.subscribe_to_view(&base_url_editor, |_, editor, event, ctx| {
+            if matches!(event, EditorEvent::Blurred | EditorEvent::Enter) {
+                let buffer_text = editor.as_ref(ctx).buffer_text(ctx);
+                let trimmed = buffer_text.trim();
+                let value = if trimmed.is_empty() {
+                    "http://localhost:11434".to_string()
+                } else {
+                    trimmed.to_string()
+                };
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let _ = settings.ollama_base_url.set_value(value.clone(), ctx);
+                });
+                if trimmed != value.as_str() {
+                    editor.update(ctx, |editor, ctx| {
+                        editor.set_buffer_text(&value, ctx);
+                    });
+                }
+            }
+        });
+
+        let refresh_models_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Refresh models", SecondaryTheme)
+                .with_icon(Icon::RefreshCw04)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(AISettingsPageAction::RefreshOllamaModels);
+                })
+        });
+        refresh_models_button.update(ctx, |button, ctx| {
+            button.set_disabled(!is_section_enabled, ctx);
+        });
+
+        // Keep enablement in sync with the global AI toggle and the Ollama toggle.
+        let base_url_editor_clone = base_url_editor.clone();
+        let refresh_models_button_clone = refresh_models_button.clone();
+        ctx.subscribe_to_model(&AISettings::handle(ctx), move |_, _, event, ctx| {
+            if matches!(
+                event,
+                AISettingsChangedEvent::IsAnyAIEnabled { .. }
+                    | AISettingsChangedEvent::OllamaEnabled { .. }
+            ) {
+                let ai_settings = AISettings::as_ref(ctx);
+                let is_section_enabled =
+                    ai_settings.is_any_ai_enabled(ctx) && *ai_settings.ollama_enabled;
+                AISettingsPageView::update_editor_interaction_state(
+                    base_url_editor_clone.clone(),
+                    is_section_enabled,
+                    ctx,
+                );
+                refresh_models_button_clone.update(ctx, |button, ctx| {
+                    button.set_disabled(!is_section_enabled, ctx);
+                });
+                ctx.notify();
+            }
+        });
+
+        Self {
+            base_url_editor,
+            enabled_toggle: SwitchStateHandle::default(),
+            allow_remote_toggle: SwitchStateHandle::default(),
+            refresh_models_button,
+        }
+    }
+
+    fn render_ollama_section(
+        &self,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let ai_settings = AISettings::as_ref(app);
+        let is_any_ai_enabled = ai_settings.is_any_ai_enabled(app);
+        let is_ollama_enabled = *ai_settings.ollama_enabled;
+        let is_section_enabled = is_any_ai_enabled && is_ollama_enabled;
+        let allow_remote = *ai_settings.ollama_allow_remote_hosts;
+
+        let mut column = Flex::column().with_spacing(16.).with_child(
+            Flex::column()
+                .with_child(render_ai_setting_toggle::<OllamaEnabled>(
+                    "Use local Ollama daemon",
+                    AISettingsPageAction::ToggleOllamaEnabled,
+                    is_ollama_enabled,
+                    is_any_ai_enabled,
+                    self.enabled_toggle.clone(),
+                    &RefCell::new(HashMap::new()),
+                    app,
+                ))
+                .with_child(render_ai_setting_description(
+                    "Routes Agent and coding requests to a local Ollama daemon. Models are discovered from `/api/tags`. Settings are not synced to a remote server.",
+                    is_any_ai_enabled,
+                    app,
+                ))
+                .finish(),
+        );
+
+        // Base URL editor + refresh button row.
+        let label =
+            Text::new_inline("Base URL", appearance.ui_font_family(), CONTENT_FONT_SIZE)
+                .with_color(styles::header_font_color(is_section_enabled, app).into())
+                .finish();
+
+        let editor_style = UiComponentStyles {
+            padding: Some(Coords {
+                top: 10.,
+                bottom: 10.,
+                left: 16.,
+                right: 16.,
+            }),
+            background: Some(appearance.theme().surface_2().into()),
+            ..Default::default()
+        };
+        let input = appearance
+            .ui_builder()
+            .text_input(self.base_url_editor.clone())
+            .with_style(editor_style)
+            .build()
+            .finish();
+
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(12.)
+            .with_child(Expanded::new(1., input).finish())
+            .with_child(ChildView::new(&self.refresh_models_button).finish())
+            .finish();
+
+        column.add_child(
+            Flex::column()
+                .with_spacing(8.)
+                .with_child(label)
+                .with_child(row)
+                .finish(),
+        );
+
+        // Loopback opt-out toggle.
+        column.add_child(
+            Flex::column()
+                .with_child(render_ai_setting_toggle::<OllamaAllowRemoteHosts>(
+                    "Allow non-loopback hosts",
+                    AISettingsPageAction::ToggleOllamaAllowRemoteHosts,
+                    allow_remote,
+                    is_section_enabled,
+                    self.allow_remote_toggle.clone(),
+                    &RefCell::new(HashMap::new()),
+                    app,
+                ))
+                .with_child(render_ai_setting_description(
+                    "Off by default for SSRF protection. Only enable when pointing Warp at a self-hosted Ollama on a trusted network.",
+                    is_section_enabled,
+                    app,
+                ))
+                .finish(),
+        );
+
+        column.finish()
+    }
+}
+
+impl SettingsWidget for OllamaSettingsWidget {
+    type View = AISettingsPageView;
+
+    fn search_terms(&self) -> &str {
+        "ollama local llm provider self-hosted llama mistral qwen"
+    }
+
+    fn should_render(&self, _app: &AppContext) -> bool {
+        FeatureFlag::OllamaProvider.is_enabled()
+    }
+
+    fn render(
+        &self,
+        _view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let ai_settings = AISettings::as_ref(app);
+        let is_any_ai_enabled = ai_settings.is_any_ai_enabled(app);
+
+        let column = Flex::column()
+            .with_child(render_separator(appearance))
+            .with_child(
+                build_sub_header(
+                    appearance,
+                    "Ollama (local)",
+                    Some(styles::header_font_color(is_any_ai_enabled, app)),
+                )
+                .with_padding_bottom(HEADER_PADDING)
+                .finish(),
+            )
+            .with_child(self.render_ollama_section(appearance, app));
+
+        Container::new(column.finish())
+            .with_margin_bottom(HEADER_PADDING)
+            .finish()
+    }
+}
+
 mod styles {
     use warp_core::ui::{appearance::Appearance, theme::Fill};
     use warpui::{AppContext, SingletonEntity};
@@ -7089,7 +7366,6 @@ mod styles {
     // Apply a negative margin to the description text so it appears closer to the main
     // settings option text.
     pub const DESCRIPTION_NEGATIVE_MARGIN_OFFSET: f32 = -12.;
-
     /// The space between a description and the next toggle.
     pub const DESCRIPTION_MARGIN_BOTTOM: f32 = 12.;
 

@@ -11,7 +11,8 @@
 > - ✅ M0.3 snapshot tests for new variants ([app/src/ai/llms_tests.rs](app/src/ai/llms_tests.rs))
 > - ✅ M1 transport module (`crates/ai/src/ollama/`) with NDJSON parser, `HttpOllamaTransport`, `list_models` / `show_model` / `chat_stream`, and tool helpers
 > - ◐ M2 agent integration: `LlmChatTransport` trait + `ServerApiChatTransport` adapter landed; `LocalOllamaChatTransport` is a stub. Routing function exists but is not wired into call sites yet — wires up with M3.
-> - ✅ M3 settings & discovery (sans UI): M3.1 settings fields, M3.4 env override, and M3.3 discovery wiring all landed. `LLMPreferences` now subscribes to Ollama `AISettingsChangedEvent` variants, runs `HttpOllamaTransport::list_models` via `discover_ollama_models`, and merges the result into `agent_mode.choices` / `coding.choices` (re-merged after each server refresh). M3.2 (UI) still TODO; capability hydration via `/api/show` still TODO.
+> - ✅ M3 settings & discovery (sans UI): M3.1 settings fields, M3.4 env override, and M3.3 discovery wiring all landed. `LLMPreferences` now subscribes to Ollama `AISettingsChangedEvent` variants, runs `HttpOllamaTransport::list_models` via `discover_ollama_models`, and merges the result into `agent_mode.choices` / `coding.choices` (re-merged after each server refresh).
+> - ✅ M3.2 settings UI panel: `OllamaSettingsWidget` added under both `AISubpage::Models` and `AISubpage::WarpAgent`, gated by `FeatureFlag::OllamaProvider`. Surfaces enable toggle, base URL editor (with placeholder + trim+default fallback), allow-non-loopback toggle, and a "Refresh models" button wired to `LLMPreferences::refresh_ollama_models`. Capability hydration via `/api/show` and `keep_alive` / `selected_models` UI editors are deferred (TOML-editable for now).
 > - ⬜ M4–M7 UX, telemetry, integration tests, rollout
 
 ---
