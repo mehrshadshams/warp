@@ -25,7 +25,10 @@ use warp_core::features::FeatureFlag;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::{
-    ai::{blocklist::SessionContext, llms::LLMId},
+    ai::{
+        blocklist::SessionContext,
+        llms::{LLMId, LLMModelHost, LLMPreferences},
+    },
     server::server_api::AIApiError,
 };
 
@@ -105,6 +108,11 @@ pub struct RequestParams {
     pub metadata: Option<RequestMetadata>,
     pub session_context: SessionContext,
     pub model: LLMId,
+    /// Routing host derived from `LLMPreferences::get_llm_info(&model)` at
+    /// request build time. `Some(LocalOllama)` means the request is served
+    /// by a client-side Ollama transport and never reaches Warp's backend.
+    /// `None` falls back to the server transport.
+    pub model_host: Option<LLMModelHost>,
     #[allow(unused)]
     pub coding_model: LLMId,
     pub cli_agent_model: LLMId,
@@ -302,6 +310,19 @@ impl RequestParams {
                 })
         };
 
+        // Pick the routing host for the chosen base model. Today only
+        // Ollama-discovered models carry a non-server host; everything else
+        // falls through to the server transport.
+        let model_host = LLMPreferences::as_ref(app)
+            .get_llm_info(&request_input.model_id)
+            .and_then(|info| {
+                if info.host_configs.contains_key(&LLMModelHost::LocalOllama) {
+                    Some(LLMModelHost::LocalOllama)
+                } else {
+                    None
+                }
+            });
+
         Self {
             input: request_input.all_inputs().cloned().collect(),
             conversation_token: conversation.server_conversation_token,
@@ -313,6 +334,7 @@ impl RequestParams {
             metadata,
             session_context,
             model: request_input.model_id.clone(),
+            model_host,
             coding_model: request_input.coding_model_id.clone(),
             cli_agent_model: request_input.cli_agent_model_id.clone(),
             computer_use_model: request_input.computer_use_model_id.clone(),

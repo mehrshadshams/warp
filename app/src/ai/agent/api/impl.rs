@@ -7,7 +7,7 @@ use warp_multi_agent_api as api;
 
 use crate::server::server_api::ServerApi;
 
-use super::transport::{LlmChatTransport, ServerApiChatTransport};
+use super::transport::chat_transport_for_host;
 use super::{convert_to::convert_input, ConvertToAPITypeError, RequestParams, ResponseStream};
 
 pub async fn generate_multi_agent_output(
@@ -137,7 +137,7 @@ pub async fn generate_multi_agent_output(
         mcp_context: params.mcp_context.map(Into::into),
     };
 
-    let transport = ServerApiChatTransport::new(server_api);
+    let transport = chat_transport_for_host(params.model_host.as_ref(), server_api);
     let response_stream = transport.stream(request).await;
     match response_stream {
         Ok(stream) => {

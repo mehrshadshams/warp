@@ -76,7 +76,7 @@ pub struct LocalOllamaChatTransport {
     // Intentionally empty until translation lands.
 }
 
-#[allow(dead_code)] // Wired into routing in M3.
+#[allow(dead_code)] // Stream impl is a stub until M4 lands; constructor is used by routing.
 impl LocalOllamaChatTransport {
     pub fn new() -> Self {
         Self::default()
@@ -103,11 +103,9 @@ impl LlmChatTransport for LocalOllamaChatTransport {
 
 /// Picks the right transport for a model whose host is `host`.
 ///
-/// Until the Ollama settings layer (M3) populates `LLMInfo.host_configs` with
-/// `LocalOllama` entries, no caller passes `Some(LocalOllama)`, so this
-/// always returns the server transport in production today. It exists now so
-/// the routing decision lives in exactly one place once M3 lands.
-#[allow(dead_code)] // Wired into call sites in M3.
+/// Models discovered from a local Ollama daemon carry
+/// `LLMModelHost::LocalOllama` in their `host_configs`; everything else
+/// falls through to the server transport.
 pub fn chat_transport_for_host(
     host: Option<&LLMModelHost>,
     server_api: Arc<ServerApi>,

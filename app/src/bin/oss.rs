@@ -24,7 +24,9 @@ fn main() -> Result<()> {
         },
     );
     if cfg!(debug_assertions) {
-        state = state.with_additional_features(warp_core::features::DEBUG_FLAGS);
+        state = state
+            .with_additional_features(warp_core::features::DEBUG_FLAGS)
+            .with_additional_features(&[warp_core::features::FeatureFlag::OllamaProvider]);
     }
     ChannelState::set(state);
 
