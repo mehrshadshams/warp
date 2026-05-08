@@ -16,12 +16,18 @@ use crate::{
     network::{NetworkStatus, NetworkStatusEvent, NetworkStatusKind},
     report_error,
     server::server_api::ServerApiProvider,
+    settings::ai::{AISettings, AISettingsChangedEvent},
     workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent},
 };
 
 use ai::api_keys::{ApiKeyManager, ApiKeyManagerEvent};
+use ai::ollama::transport::HttpOllamaTransport;
 
 use super::execution_profiles::profiles::AIExecutionProfilesModel;
+use super::ollama_discovery::{
+    discover_ollama_models, filter_by_user_selection, merge_choices_with_ollama,
+    ollama_config_from_settings, strip_ollama_entries,
+};
 
 pub use ai::LLMId;
 
@@ -559,6 +565,12 @@ pub struct LLMPreferences {
     // from the base LLM for the active profile. This means that if the user selects the
     // profile's default model and changes their profile, the model will update to that profile's default.
     base_llm_for_terminal_view: HashMap<EntityId, LLMId>,
+    /// Latest set of LLMInfos discovered from the local Ollama daemon. Empty
+    /// when the integration is disabled or discovery hasn't run yet. These
+    /// are merged into `models_by_feature.{agent_mode,coding}.choices` via
+    /// [`Self::reapply_ollama_choices`] whenever the set or the server-side
+    /// model list changes.
+    ollama_choices: Vec<LLMInfo>,
 }
 
 impl LLMPreferences {
@@ -599,12 +611,32 @@ impl LLMPreferences {
             },
         );
 
+        // Refresh the local Ollama model list whenever the user toggles the
+        // integration, points at a different daemon, opts into remote hosts,
+        // or changes the per-model selection.
+        ctx.subscribe_to_model(
+            &AISettings::handle(ctx),
+            |me, event: &AISettingsChangedEvent, ctx| {
+                if matches!(
+                    event,
+                    AISettingsChangedEvent::OllamaEnabled { .. }
+                        | AISettingsChangedEvent::OllamaBaseUrl { .. }
+                        | AISettingsChangedEvent::OllamaAllowRemoteHosts { .. }
+                        | AISettingsChangedEvent::OllamaSelectedModels { .. }
+                        | AISettingsChangedEvent::OllamaKeepAlive { .. }
+                ) {
+                    me.refresh_ollama_models(ctx);
+                }
+            },
+        );
+
         let base_llm_for_terminal_view = HashMap::new();
 
         let me = Self {
             models_by_feature,
             last_update: None,
             base_llm_for_terminal_view,
+            ollama_choices: Vec::new(),
         };
 
         // In agent mode eval builds, eagerly kick off a fetch of the model list from the server
@@ -613,6 +645,12 @@ impl LLMPreferences {
         // to avoid duplicate requests at startup.
         #[cfg(feature = "agent_mode_evals")]
         me.refresh_available_models(ctx);
+
+        // Kick off an initial Ollama discovery if the integration is enabled.
+        // This is a no-op when disabled and fails silently when the daemon is
+        // unreachable.
+        let mut me = me;
+        me.refresh_ollama_models(ctx);
 
         me
     }
@@ -970,6 +1008,74 @@ impl LLMPreferences {
         }
     }
 
+    /// Spawn a discovery task against the local Ollama daemon (if enabled in
+    /// settings) and merge the result into the model picker on completion.
+    /// Cheap to call repeatedly: when Ollama is disabled it just clears any
+    /// previously discovered choices and returns.
+    pub fn refresh_ollama_models(&mut self, ctx: &mut ModelContext<Self>) {
+        let ai_settings = AISettings::as_ref(ctx);
+        let config = match ollama_config_from_settings(ai_settings) {
+            None => {
+                // Disabled or no base URL — drop any previously discovered choices.
+                if !self.ollama_choices.is_empty() {
+                    self.ollama_choices.clear();
+                    self.reapply_ollama_choices(ctx);
+                }
+                return;
+            }
+            Some(Ok(cfg)) => cfg,
+            Some(Err(e)) => {
+                log::warn!("Ollama settings produced an invalid config: {e}");
+                return;
+            }
+        };
+        let selected: Vec<String> = ai_settings.ollama_selected_models.to_vec();
+
+        let transport = match HttpOllamaTransport::new(config) {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("Failed to build HttpOllamaTransport: {e}");
+                return;
+            }
+        };
+        ctx.spawn(
+            async move { discover_ollama_models(&transport).await },
+            move |me, result, ctx| match result {
+                Ok(infos) => {
+                    let filtered = filter_by_user_selection(infos, &selected);
+                    me.ollama_choices = filtered;
+                    me.reapply_ollama_choices(ctx);
+                }
+                Err(e) => {
+                    log::warn!("Ollama discovery failed: {e}");
+                    // Don't clear ollama_choices on transient failure — let
+                    // the previous good list keep showing in the picker.
+                }
+            },
+        );
+    }
+
+    /// Recompute `agent_mode.choices` and `coding.choices` by stripping any
+    /// existing Ollama entries and re-merging the latest [`Self::ollama_choices`].
+    /// Emits [`LLMPreferencesEvent::UpdatedAvailableLLMs`] if anything changed.
+    fn reapply_ollama_choices(&mut self, ctx: &mut ModelContext<Self>) {
+        let mut changed = false;
+        for available in [
+            &mut self.models_by_feature.agent_mode,
+            &mut self.models_by_feature.coding,
+        ] {
+            let stripped = strip_ollama_entries(&available.choices);
+            let merged = merge_choices_with_ollama(&stripped, self.ollama_choices.clone());
+            if merged != available.choices {
+                available.choices = merged;
+                changed = true;
+            }
+        }
+        if changed {
+            ctx.emit(LLMPreferencesEvent::UpdatedAvailableLLMs);
+        }
+    }
+
     fn on_server_update(&mut self, update: ModelsByFeature, ctx: &mut ModelContext<Self>) {
         let has_existing_persisted_config = get_cached_models(ctx).is_some();
 
@@ -1005,6 +1111,20 @@ impl LLMPreferences {
                     },
                 )),
             });
+        }
+
+        // Server refresh just replaced our `agent_mode.choices` /
+        // `coding.choices` wholesale, so re-merge Ollama-discovered entries
+        // back in. This is a no-op when `ollama_choices` is empty.
+        if !self.ollama_choices.is_empty() {
+            for available in [
+                &mut self.models_by_feature.agent_mode,
+                &mut self.models_by_feature.coding,
+            ] {
+                let stripped = strip_ollama_entries(&available.choices);
+                available.choices =
+                    merge_choices_with_ollama(&stripped, self.ollama_choices.clone());
+            }
         }
 
         ctx.emit(LLMPreferencesEvent::UpdatedAvailableLLMs);

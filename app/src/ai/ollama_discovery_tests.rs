@@ -192,3 +192,59 @@ fn merge_with_empty_ollama_returns_existing_clone() {
     assert_eq!(merged.len(), 1);
     assert_eq!(merged[0].id.as_str(), "auto");
 }
+
+// ---- strip_ollama_entries ----------------------------------------------
+
+#[test]
+fn strip_removes_only_ollama_entries() {
+    let infos = vec![
+        server_info("auto"),
+        llm_info_from_ollama_tag(&tag("llama3.1:8b", None)),
+        server_info("claude"),
+        llm_info_from_ollama_tag(&tag("mistral", None)),
+    ];
+    let stripped = strip_ollama_entries(&infos);
+    assert_eq!(stripped.len(), 2);
+    assert_eq!(stripped[0].id.as_str(), "auto");
+    assert_eq!(stripped[1].id.as_str(), "claude");
+}
+
+#[test]
+fn strip_on_no_ollama_is_passthrough() {
+    let infos = vec![server_info("auto"), server_info("claude")];
+    let stripped = strip_ollama_entries(&infos);
+    assert_eq!(stripped.len(), 2);
+}
+
+// ---- filter_by_user_selection ------------------------------------------
+
+#[test]
+fn empty_selection_keeps_everything() {
+    let infos = vec![
+        llm_info_from_ollama_tag(&tag("llama3.1:8b", None)),
+        llm_info_from_ollama_tag(&tag("mistral", None)),
+    ];
+    let filtered = filter_by_user_selection(infos, &[]);
+    assert_eq!(filtered.len(), 2);
+}
+
+#[test]
+fn selection_keeps_only_matching_ids() {
+    let infos = vec![
+        llm_info_from_ollama_tag(&tag("llama3.1:8b", None)),
+        llm_info_from_ollama_tag(&tag("mistral", None)),
+        llm_info_from_ollama_tag(&tag("qwen2.5-coder:14b", None)),
+    ];
+    let selected = vec!["mistral".to_string(), "qwen2.5-coder:14b".to_string()];
+    let filtered = filter_by_user_selection(infos, &selected);
+    assert_eq!(filtered.len(), 2);
+    assert_eq!(filtered[0].id.as_str(), "mistral");
+    assert_eq!(filtered[1].id.as_str(), "qwen2.5-coder:14b");
+}
+
+#[test]
+fn selection_with_no_matches_yields_empty() {
+    let infos = vec![llm_info_from_ollama_tag(&tag("mistral", None))];
+    let filtered = filter_by_user_selection(infos, &["does-not-exist".to_string()]);
+    assert!(filtered.is_empty());
+}

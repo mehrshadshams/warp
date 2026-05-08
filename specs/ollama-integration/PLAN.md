@@ -11,7 +11,7 @@
 > - ✅ M0.3 snapshot tests for new variants ([app/src/ai/llms_tests.rs](app/src/ai/llms_tests.rs))
 > - ✅ M1 transport module (`crates/ai/src/ollama/`) with NDJSON parser, `HttpOllamaTransport`, `list_models` / `show_model` / `chat_stream`, and tool helpers
 > - ◐ M2 agent integration: `LlmChatTransport` trait + `ServerApiChatTransport` adapter landed; `LocalOllamaChatTransport` is a stub. Routing function exists but is not wired into call sites yet — wires up with M3.
-> - ◐ M3 settings & discovery: M3.1 settings fields, M3.4 `WARP_OLLAMA_BASE_URL` env override, and M3.3 translation layer (`ai::ollama_discovery`) all landed with tests. Wiring discovered models into `LLMPreferences.choices` and the live refresh-on-settings-change loop are still TODO. M3.2 (UI) still TODO.
+> - ✅ M3 settings & discovery (sans UI): M3.1 settings fields, M3.4 env override, and M3.3 discovery wiring all landed. `LLMPreferences` now subscribes to Ollama `AISettingsChangedEvent` variants, runs `HttpOllamaTransport::list_models` via `discover_ollama_models`, and merges the result into `agent_mode.choices` / `coding.choices` (re-merged after each server refresh). M3.2 (UI) still TODO; capability hydration via `/api/show` still TODO.
 > - ⬜ M4–M7 UX, telemetry, integration tests, rollout
 
 ---
@@ -324,10 +324,10 @@ Tasks are sized to be independently reviewable. Dependencies are noted.
 
 - [x] **T3.1** Added Ollama settings fields in [app/src/settings/ai.rs](app/src/settings/ai.rs) under `agents.warp_agent.providers.ollama.*`: `ollama_enabled` (bool, default `false`), `ollama_base_url` (String, default `http://localhost:11434`), `ollama_keep_alive` (String, default empty), `ollama_selected_models` (Vec<String>), `ollama_allow_remote_hosts` (bool, default `false`). Defaults verified by `ollama_settings_defaults` test in [app/src/settings/ai_tests.rs](app/src/settings/ai_tests.rs).
 - [ ] **T3.2** Settings UI panel (per [.agents/skills/warp-ui-guidelines/SKILL.md](.agents/skills/warp-ui-guidelines/SKILL.md)): enable toggle, base URL input, "Test connection" button, model multi‑select.
-- [ ] **T3.3** Model discovery service that populates `AvailableLLMs.choices` for Ollama and reacts to settings changes.
-  - [x] Pure translation `llm_info_from_ollama_tag` and async `discover_ollama_models` over `OllamaTransport` in [app/src/ai/ollama_discovery.rs](app/src/ai/ollama_discovery.rs); 5 unit tests covering translation, ordering, error propagation, and empty list.
-  - [x] Pure merge helper `merge_choices_with_ollama` (existing-wins on id collision, intra-Ollama dedupe, preserves order) in the same module; 4 unit tests.
-  - [ ] Wire into `LLMPreferences.models_by_feature.*.choices` (call merge alongside server-provided choices) and refresh on `AISettings` change / network reconnect.
+- [x] **T3.3** Model discovery wired into `LLMPreferences`.
+  - [x] Pure translation `llm_info_from_ollama_tag` + async `discover_ollama_models` over `OllamaTransport` in [app/src/ai/ollama_discovery.rs](app/src/ai/ollama_discovery.rs).
+  - [x] Pure helpers `merge_choices_with_ollama` / `strip_ollama_entries` / `filter_by_user_selection` / `ollama_config_from_settings` (with best-effort `keep_alive` parsing).
+  - [x] `LLMPreferences::refresh_ollama_models` builds an `HttpOllamaTransport` from settings, spawns the discovery task, applies user selection filter, and re-merges into `agent_mode.choices` / `coding.choices`. Subscribed to `AISettingsChangedEvent::Ollama*` for live refresh and re-applied after each server refresh in `on_server_update`.
   - [ ] Optionally hydrate capability hints (tools / vision) via `/api/show` per discovered tag.
 - [x] **T3.4** Env var override `WARP_OLLAMA_BASE_URL` via `AISettings::resolved_ollama_base_url(&self) -> Option<String>` in [app/src/settings/ai.rs](app/src/settings/ai.rs). Env wins over the setting; blank values fall back. Covered by `resolved_ollama_base_url_setting_and_env_override` test.
 
