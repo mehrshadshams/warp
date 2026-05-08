@@ -746,3 +746,68 @@ fn test_mark_quota_banner_as_dismissed() {
         });
     });
 }
+
+// Ollama settings tests (M3.1 / M3.4)
+
+#[test]
+fn ollama_settings_defaults() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        AISettings::handle(&app).read(&app, |settings, _ctx| {
+            assert!(!*settings.ollama_enabled);
+            assert_eq!(&*settings.ollama_base_url, "http://localhost:11434");
+            assert!(settings.ollama_keep_alive.is_empty());
+            assert!(settings.ollama_selected_models.is_empty());
+            assert!(!*settings.ollama_allow_remote_hosts);
+        });
+    });
+}
+
+#[test]
+fn resolved_ollama_base_url_setting_and_env_override() {
+    // SAFETY: This single test owns the WARP_OLLAMA_BASE_URL env var for its
+    // duration. We start by clearing it, assert the setting wins, then set it
+    // and assert the override wins, then clear again. Run serially so other
+    // tests aren't affected.
+    unsafe {
+        std::env::remove_var("WARP_OLLAMA_BASE_URL");
+    }
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        // Env unset → setting (the default) should be returned.
+        AISettings::handle(&app).read(&app, |settings, _ctx| {
+            assert_eq!(
+                settings.resolved_ollama_base_url().as_deref(),
+                Some("http://localhost:11434")
+            );
+        });
+
+        // Env set → override wins.
+        unsafe {
+            std::env::set_var("WARP_OLLAMA_BASE_URL", "http://override.example:9999");
+        }
+        AISettings::handle(&app).read(&app, |settings, _ctx| {
+            assert_eq!(
+                settings.resolved_ollama_base_url().as_deref(),
+                Some("http://override.example:9999")
+            );
+        });
+
+        // Env set but blank → fall back to setting.
+        unsafe {
+            std::env::set_var("WARP_OLLAMA_BASE_URL", "   ");
+        }
+        AISettings::handle(&app).read(&app, |settings, _ctx| {
+            assert_eq!(
+                settings.resolved_ollama_base_url().as_deref(),
+                Some("http://localhost:11434")
+            );
+        });
+
+        unsafe {
+            std::env::remove_var("WARP_OLLAMA_BASE_URL");
+        }
+    });
+}

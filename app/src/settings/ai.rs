@@ -1460,6 +1460,66 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.warp_agent.other.agent_attribution_enabled",
         description: "Whether the Warp Agent adds an attribution co-author line to commit messages and pull requests it creates.",
     }
+
+    // -- Ollama (local LLM provider) settings -----------------------------------
+    // All Ollama traffic is client-routed (never proxied through Warp's backend).
+    // Surfaced in Settings -> AI when the `OllamaProvider` feature flag is on.
+    //
+    // The base URL is NOT a secret and is intentionally stored in settings rather
+    // than in `managed_secrets`. It can be overridden at runtime by the
+    // `WARP_OLLAMA_BASE_URL` environment variable (see
+    // `AISettings::resolved_ollama_base_url`).
+    ollama_enabled: OllamaEnabled {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "agents.warp_agent.providers.ollama.enabled",
+        description: "Whether to enable Ollama as a local LLM provider for the Warp Agent.",
+    }
+    ollama_base_url: OllamaBaseUrl {
+        type: String,
+        default: "http://localhost:11434".to_string(),
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "agents.warp_agent.providers.ollama.base_url",
+        description: "Base URL for the Ollama daemon (default http://localhost:11434).",
+    }
+    // Sent verbatim to Ollama as the `keep_alive` field (e.g. "10m", "1h").
+    // Empty string means "use the daemon default".
+    ollama_keep_alive: OllamaKeepAlive {
+        type: String,
+        default: String::new(),
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "agents.warp_agent.providers.ollama.keep_alive",
+        description: "How long Ollama should keep the model loaded between requests (e.g. \"10m\"). Empty uses the Ollama daemon default.",
+    }
+    // Names of Ollama models the user has opted into surfacing in the model picker.
+    // Empty means "all discovered models".
+    ollama_selected_models: OllamaSelectedModels {
+        type: Vec<String>,
+        default: Vec::new(),
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "agents.warp_agent.providers.ollama.selected_models",
+        description: "Subset of discovered Ollama models to surface in the model picker. Empty means all.",
+    }
+    // Off by default: only loopback (localhost / 127.0.0.1 / ::1) base URLs are
+    // accepted. Flip on to point Warp at a self-hosted Ollama on your LAN.
+    ollama_allow_remote_hosts: OllamaAllowRemoteHosts {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "agents.warp_agent.providers.ollama.allow_remote_hosts",
+        description: "Allow non-loopback Ollama base URLs (off by default for SSRF protection).",
+    }
 ]);
 
 impl AISettings {
@@ -1494,6 +1554,26 @@ impl AISettings {
         }
 
         contains_remote_blocks || contains_restored_remote_blocks
+    }
+
+    /// Resolved Ollama base URL: the `WARP_OLLAMA_BASE_URL` env var wins,
+    /// otherwise the user setting. Returns `None` if both are blank.
+    ///
+    /// The env override is intended for power users / CI; it is read on every
+    /// call so toggling it without a restart works for tests.
+    pub fn resolved_ollama_base_url(&self) -> Option<String> {
+        if let Ok(v) = std::env::var("WARP_OLLAMA_BASE_URL") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        let setting = self.ollama_base_url.trim();
+        if setting.is_empty() {
+            None
+        } else {
+            Some(setting.to_string())
+        }
     }
 
     pub fn is_any_ai_enabled(&self, app: &AppContext) -> bool {
