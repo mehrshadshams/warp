@@ -122,3 +122,58 @@ fn llm_info_round_trip_serializes_and_deserializes() {
 
     assert_eq!(info, round_tripped);
 }
+
+// -- Ollama provider / LocalOllama host variant snapshot tests --
+
+#[test]
+fn llm_provider_ollama_round_trip() {
+    let serialized = serde_json::to_string(&LLMProvider::Ollama).expect("serialize");
+    assert_eq!(serialized, "\"Ollama\"");
+    let parsed: LLMProvider = serde_json::from_str(&serialized).expect("deserialize");
+    assert_eq!(parsed, LLMProvider::Ollama);
+}
+
+#[test]
+fn llm_model_host_local_ollama_round_trip() {
+    let serialized = serde_json::to_string(&LLMModelHost::LocalOllama).expect("serialize");
+    assert_eq!(serialized, "\"LocalOllama\"");
+    let parsed: LLMModelHost = serde_json::from_str(&serialized).expect("deserialize");
+    assert_eq!(parsed, LLMModelHost::LocalOllama);
+}
+
+#[test]
+fn llm_model_host_unknown_variant_falls_back() {
+    // Unknown wire values must deserialize to LLMModelHost::Unknown, not panic.
+    let parsed: LLMModelHost =
+        serde_json::from_str("\"SomeFutureHost\"").expect("should accept unknown variant");
+    assert_eq!(parsed, LLMModelHost::Unknown);
+}
+
+#[test]
+fn llm_info_deserializes_ollama_provider_with_local_host() {
+    let raw = r#"{
+            "display_name": "llama3.1:8b",
+            "id": "llama3.1:8b",
+            "usage_metadata": { "request_multiplier": 0, "credit_multiplier": 0 },
+            "provider": "Ollama",
+            "vision_supported": false,
+            "host_configs": [
+                { "enabled": true, "model_routing_host": "LocalOllama" }
+            ]
+        }"#;
+
+    let info: LLMInfo = serde_json::from_str(raw).expect("should deserialize ollama model");
+    assert_eq!(info.provider, LLMProvider::Ollama);
+    assert!(
+        info.host_configs
+            .get(&LLMModelHost::LocalOllama)
+            .expect("LocalOllama host present")
+            .enabled
+    );
+}
+
+#[test]
+fn llm_provider_ollama_has_no_icon() {
+    // Ollama models surface a "Local" badge instead of a brand icon.
+    assert!(LLMProvider::Ollama.icon().is_none());
+}

@@ -6,8 +6,9 @@
 > **Progress snapshot (verified against the working tree)**
 >
 > - ✅ M0.1 feature flag `OllamaProvider`
-> - ◐ M0.2 client enums done; GraphQL `LlmProvider::Ollama` still missing
-> - ⬜ M0.3 snapshot tests for new variants
+> - ✅ M0.2 client enums (`LLMProvider::Ollama`, `LLMModelHost::LocalOllama`)
+> - ❌ M0.2c GraphQL `LlmProvider::Ollama` — **N/A**: server schema has no `OLLAMA` value and Ollama is client‑routed; cynic’s `Other(String)` fallback already handles forward‑compat. Revisit only if/when the server schema adds the variant.
+> - ✅ M0.3 snapshot tests for new variants ([app/src/ai/llms_tests.rs](app/src/ai/llms_tests.rs))
 > - ✅ M1 transport module (`crates/ai/src/ollama/`) with NDJSON parser, `HttpOllamaTransport`, `list_models` / `show_model` / `chat_stream`, and tool helpers
 > - ⬜ M2 agent integration (`LocalLlmAgentEventSource`)
 > - ⬜ M3 settings & discovery
@@ -221,7 +222,7 @@ On settings open and on demand:
 
 ### 4.6 GraphQL schema
 
-Add an `Ollama` variant to the cynic `LlmProvider` enum in [crates/graphql/src/api/workspace.rs](crates/graphql/src/api/workspace.rs) so any backend telemetry / feature toggles that key off provider name serialize symmetrically. Note the enum already has an `#[cynic(fallback)] Other(String)` arm, so this is technically optional — but adding the explicit variant keeps client/server in lockstep. Server side need not handle requests — provider is client‑routed.
+**Decision: deferred / not required for v1.** The cynic `LlmProvider` enum in [crates/graphql/src/api/workspace.rs](crates/graphql/src/api/workspace.rs#L77) mirrors the server schema in [crates/warp_graphql_schema/api/schema.graphql](crates/warp_graphql_schema/api/schema.graphql#L1924), which currently exposes `{ ANTHROPIC, GOOGLE, OPENAI, UNKNOWN, XAI }`. Since Ollama is **client‑routed** (the server never returns an Ollama provider value), adding a client‑only `Ollama` variant would be dead code. The existing `#[cynic(fallback)] Other(String)` arm already absorbs any future `OLLAMA` value gracefully. Revisit if/when the server schema is extended.
 
 ### 4.7 Feature flag
 
@@ -273,11 +274,11 @@ Tasks are sized to be independently reviewable. Dependencies are noted.
 ### Milestone 0 — Scaffolding
 
 - [x] **T0.1** Add `OllamaProvider` to `FeatureFlag` enum and wire defaults (off everywhere) — see [.agents/skills/add-feature-flag/SKILL.md](.agents/skills/add-feature-flag/SKILL.md). _(landed at [crates/warp_features/src/lib.rs](crates/warp_features/src/lib.rs#L867))_
-- [~] **T0.2** Add `Ollama` variant to `LLMProvider` and `LocalOllama` to `LLMModelHost` in [app/src/ai/llms.rs](app/src/ai/llms.rs); add corresponding `Ollama` to GraphQL enum in [crates/graphql/src/api/workspace.rs](crates/graphql/src/api/workspace.rs).
+- [x] **T0.2** Add `Ollama` variant to `LLMProvider` and `LocalOllama` to `LLMModelHost` in [app/src/ai/llms.rs](app/src/ai/llms.rs).
   - [x] Client `LLMProvider::Ollama` ([app/src/ai/llms.rs](app/src/ai/llms.rs#L111))
   - [x] Client `LLMModelHost::LocalOllama` ([app/src/ai/llms.rs](app/src/ai/llms.rs#L136))
-  - [ ] GraphQL `LlmProvider::Ollama` (still missing — see [crates/graphql/src/api/workspace.rs](crates/graphql/src/api/workspace.rs#L77))
-- [ ] **T0.3** Snapshot tests: serialize/deserialize the new variants in [app/src/ai/llms_tests.rs](app/src/ai/llms_tests.rs) — file exists but has no `Ollama` coverage yet.
+  - [N/A] GraphQL `LlmProvider::Ollama` — deferred; server schema has no `OLLAMA` value (see §4.6).
+- [x] **T0.3** Snapshot tests: serialize/deserialize the new variants in [app/src/ai/llms_tests.rs](app/src/ai/llms_tests.rs) (5 tests — round‑trips, unknown‑host fallback, full `LLMInfo` deserialization with `LocalOllama` host, icon contract).
 
 ### Milestone 1 — Transport (depends on T0.x)
 
