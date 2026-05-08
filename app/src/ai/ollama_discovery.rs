@@ -10,11 +10,7 @@
 
 use std::collections::HashMap;
 
-use ai::ollama::{
-    dto::OllamaModelTag,
-    error::OllamaError,
-    transport::OllamaTransport,
-};
+use ai::ollama::{dto::OllamaModelTag, error::OllamaError, transport::OllamaTransport};
 
 use crate::ai::llms::{
     LLMContextWindow, LLMInfo, LLMModelHost, LLMProvider, LLMUsageMetadata, RoutingHostConfig,
@@ -30,12 +26,7 @@ use crate::ai::llms::{
 pub fn llm_info_from_ollama_tag(tag: &OllamaModelTag) -> LLMInfo {
     let id = tag.name.clone();
     let display_name = tag.name.clone();
-    let base_model_name = tag
-        .name
-        .split(':')
-        .next()
-        .unwrap_or(&tag.name)
-        .to_string();
+    let base_model_name = tag.name.split(':').next().unwrap_or(&tag.name).to_string();
 
     let description = tag
         .details
@@ -82,6 +73,33 @@ pub async fn discover_ollama_models(
 ) -> Result<Vec<LLMInfo>, OllamaError> {
     let tags = transport.list_models().await?;
     Ok(tags.iter().map(llm_info_from_ollama_tag).collect())
+}
+
+/// Merge server-provided [`LLMInfo`] choices with Ollama-discovered ones.
+///
+/// Ollama entries are appended after the server entries so that the existing
+/// default (which references a server-provided id) keeps working, and the
+/// model picker shows local models in a contiguous block at the bottom.
+///
+/// If an Ollama-provided id collides with an existing entry, the existing
+/// entry wins (the daemon shouldn't be authoritative for server-managed
+/// models). The Ollama list is otherwise deduped by id within itself,
+/// preserving first occurrence.
+pub fn merge_choices_with_ollama(
+    existing: &[LLMInfo],
+    ollama: Vec<LLMInfo>,
+) -> Vec<LLMInfo> {
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<crate::ai::llms::LLMId> =
+        existing.iter().map(|i| i.id.clone()).collect();
+    let mut merged: Vec<LLMInfo> = existing.to_vec();
+    for info in ollama {
+        if seen.insert(info.id.clone()) {
+            merged.push(info);
+        }
+    }
+    merged
 }
 
 #[cfg(test)]

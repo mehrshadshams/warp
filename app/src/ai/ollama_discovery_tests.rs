@@ -129,3 +129,66 @@ async fn discover_empty_list_is_ok() {
     let infos = discover_ollama_models(&transport).await.unwrap();
     assert!(infos.is_empty());
 }
+
+// ---- merge_choices_with_ollama -----------------------------------------
+
+fn server_info(id: &str) -> LLMInfo {
+    let mut info = llm_info_from_ollama_tag(&tag(id, None));
+    // Pretend it came from the server: not LocalOllama-routed.
+    info.host_configs.clear();
+    info.provider = LLMProvider::Unknown;
+    info
+}
+
+#[test]
+fn merge_appends_ollama_after_existing_and_preserves_order() {
+    let existing = vec![server_info("auto"), server_info("claude-sonnet-4")];
+    let ollama = vec![
+        llm_info_from_ollama_tag(&tag("llama3.1:8b", Some("8B"))),
+        llm_info_from_ollama_tag(&tag("mistral", None)),
+    ];
+
+    let merged = merge_choices_with_ollama(&existing, ollama);
+
+    assert_eq!(merged.len(), 4);
+    assert_eq!(merged[0].id.as_str(), "auto");
+    assert_eq!(merged[1].id.as_str(), "claude-sonnet-4");
+    assert_eq!(merged[2].id.as_str(), "llama3.1:8b");
+    assert_eq!(merged[3].id.as_str(), "mistral");
+}
+
+#[test]
+fn merge_existing_wins_on_id_collision() {
+    let existing = vec![server_info("llama3.1:8b")];
+    let ollama = vec![llm_info_from_ollama_tag(&tag("llama3.1:8b", Some("8B")))];
+
+    let merged = merge_choices_with_ollama(&existing, ollama);
+
+    assert_eq!(merged.len(), 1);
+    // Existing entry preserved (no LocalOllama host_config).
+    assert!(merged[0].host_configs.is_empty());
+    assert_eq!(merged[0].provider, LLMProvider::Unknown);
+}
+
+#[test]
+fn merge_dedupes_within_ollama_list() {
+    let ollama = vec![
+        llm_info_from_ollama_tag(&tag("llama3.1:8b", None)),
+        llm_info_from_ollama_tag(&tag("llama3.1:8b", Some("8B"))),
+        llm_info_from_ollama_tag(&tag("mistral", None)),
+    ];
+
+    let merged = merge_choices_with_ollama(&[], ollama);
+
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[0].id.as_str(), "llama3.1:8b");
+    assert_eq!(merged[1].id.as_str(), "mistral");
+}
+
+#[test]
+fn merge_with_empty_ollama_returns_existing_clone() {
+    let existing = vec![server_info("auto")];
+    let merged = merge_choices_with_ollama(&existing, vec![]);
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].id.as_str(), "auto");
+}

@@ -326,7 +326,8 @@ Tasks are sized to be independently reviewable. Dependencies are noted.
 - [ ] **T3.2** Settings UI panel (per [.agents/skills/warp-ui-guidelines/SKILL.md](.agents/skills/warp-ui-guidelines/SKILL.md)): enable toggle, base URL input, "Test connection" button, model multi‑select.
 - [ ] **T3.3** Model discovery service that populates `AvailableLLMs.choices` for Ollama and reacts to settings changes.
   - [x] Pure translation `llm_info_from_ollama_tag` and async `discover_ollama_models` over `OllamaTransport` in [app/src/ai/ollama_discovery.rs](app/src/ai/ollama_discovery.rs); 5 unit tests covering translation, ordering, error propagation, and empty list.
-  - [ ] Wire into `LLMPreferences.models_by_feature.*.choices` (merge alongside server-provided choices) and refresh on `AISettings` change / network reconnect.
+  - [x] Pure merge helper `merge_choices_with_ollama` (existing-wins on id collision, intra-Ollama dedupe, preserves order) in the same module; 4 unit tests.
+  - [ ] Wire into `LLMPreferences.models_by_feature.*.choices` (call merge alongside server-provided choices) and refresh on `AISettings` change / network reconnect.
   - [ ] Optionally hydrate capability hints (tools / vision) via `/api/show` per discovered tag.
 - [x] **T3.4** Env var override `WARP_OLLAMA_BASE_URL` via `AISettings::resolved_ollama_base_url(&self) -> Option<String>` in [app/src/settings/ai.rs](app/src/settings/ai.rs). Env wins over the setting; blank values fall back. Covered by `resolved_ollama_base_url_setting_and_env_override` test.
 
