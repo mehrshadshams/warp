@@ -106,6 +106,9 @@ pub enum LLMProvider {
     Anthropic,
     Google,
     Xai,
+    /// Local / self-hosted Ollama endpoint. Models with this provider are
+    /// discovered and served from the user's machine, never via Warp's backend.
+    Ollama,
     Unknown,
 }
 
@@ -117,6 +120,7 @@ impl LLMProvider {
             LLMProvider::Anthropic => Some(Icon::ClaudeLogo),
             LLMProvider::Google => Some(Icon::GeminiLogo),
             LLMProvider::Xai => None,
+            LLMProvider::Ollama => None,
             LLMProvider::Unknown => None,
         }
     }
@@ -127,6 +131,9 @@ impl LLMProvider {
 pub enum LLMModelHost {
     DirectApi,
     AwsBedrock,
+    /// Client-side transport that talks directly to a local Ollama daemon.
+    /// Requests with this host are NOT proxied through Warp's backend.
+    LocalOllama,
     #[serde(other)]
     Unknown,
 }

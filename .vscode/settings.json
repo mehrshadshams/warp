@@ -32,4 +32,9 @@
   "powershell.codeFormatting.whitespaceInsideBrace": true,
   "powershell.scriptAnalysis.enable": true,
   "powershell.scriptAnalysis.settingsPath": "./.PSScriptAnalyzerSettings.psd1",
+  "chat.tools.terminal.autoApprove": {
+    "cargo check": true,
+    "cargo test": true,
+    "cargo tree": true
+  },
 }

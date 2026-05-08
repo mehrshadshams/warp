@@ -859,6 +859,11 @@ pub enum FeatureFlag {
     /// conversation into a fresh cloud agent run with the current workspace
     /// snapshot attached. Requires `OzHandoff` to also be enabled.
     HandoffLocalCloud,
+
+    /// Enables Ollama as a local LLM provider for the Warp Agent.
+    /// When enabled, users can configure a local (or self-hosted) Ollama
+    /// endpoint and pick installed Ollama models for agent_mode / coding.
+    OllamaProvider,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
@@ -941,6 +946,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::CloudModeInputV2,
     FeatureFlag::HandoffLocalCloud,
     FeatureFlag::DragTabsToWindows,
+    FeatureFlag::OllamaProvider,
 ];
 
 /// Features enabled for feature preview build users (e.g.: Friends of Warp).

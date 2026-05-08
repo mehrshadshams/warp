@@ -13,3 +13,6 @@ pub mod project_context;
 pub mod skills;
 mod telemetry;
 pub mod workspace;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ollama;
