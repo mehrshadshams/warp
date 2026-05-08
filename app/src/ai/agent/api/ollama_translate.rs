@@ -174,6 +174,17 @@ pub fn pick_target_task_id(request: &api::Request) -> Option<String> {
 /// Translate a stream of Ollama [`ChatStreamChunk`]s into the
 /// `(StreamInit, ClientActions, …, StreamFinished)` sequence the agent loop
 /// expects. The output stream always emits exactly one terminal event.
+///
+/// `target_task_id`:
+/// * `Some(id)` — attach the assistant message to that existing task. Used
+///   for follow-up turns where the conversation already has an active root
+///   task on the server side.
+/// * `None` — synthesize a fresh task id and emit a `CreateTask` action
+///   first. The conversation state machine will upgrade the locally
+///   created optimistic root task to use this id (see the no-parent branch
+///   of `Action::CreateTask` in `conversation.rs`). Used for the very
+///   first request of a new conversation, before the conversation state
+///   machine has surfaced any task to the request builder.
 pub fn chunks_to_response_events<S>(
     upstream: S,
     target_task_id: Option<String>,
@@ -182,15 +193,29 @@ pub fn chunks_to_response_events<S>(
 where
     S: futures::Stream<Item = Result<ChatStreamChunk, ai::ollama::OllamaError>> + Send + 'static,
 {
-    // We can't translate without a target task; surface a clear error before
-    // touching the network.
-    let Some(task_id) = target_task_id else {
-        return Box::pin(stream::once(async {
-            Err(Arc::new(AIApiError::Other(anyhow!(
-                "Ollama transport: no task in request.task_context to attach response to. \
-                 Start a fresh conversation and try again."
-            ))))
-        }));
+    // If no task exists yet, fabricate a fresh root task id and prepend a
+    // `CreateTask` so the client upgrades its optimistic root task to ours.
+    let (task_id, create_task_action) = match target_task_id {
+        Some(id) => (id, None),
+        None => {
+            let new_id = Uuid::new_v4().to_string();
+            let create = action(api::client_action::Action::CreateTask(
+                api::client_action::CreateTask {
+                    task: Some(api::Task {
+                        id: new_id.clone(),
+                        description: String::new(),
+                        // No `dependencies` → no parent_task_id → the
+                        // conversation state machine takes the root-task
+                        // upgrade branch.
+                        dependencies: None,
+                        messages: vec![],
+                        summary: String::new(),
+                        server_data: String::new(),
+                    }),
+                },
+            ));
+            (new_id, Some(create))
+        }
     };
 
     let init_event = response_event(api::response_event::Type::Init(
@@ -201,24 +226,25 @@ where
         },
     ));
 
-    let begin_actions = response_event(api::response_event::Type::ClientActions(
-        api::response_event::ClientActions {
-            actions: vec![
-                action(api::client_action::Action::BeginTransaction(
-                    api::client_action::BeginTransaction {},
-                )),
-                action(api::client_action::Action::AddMessagesToTask(
-                    api::client_action::AddMessagesToTask {
-                        task_id: task_id.clone(),
-                        messages: vec![seed_assistant_message(
-                            &task_id,
-                            &ids.assistant_message_id,
-                            &ids.request_id,
-                        )],
-                    },
-                )),
-            ],
+    let mut begin = vec![action(api::client_action::Action::BeginTransaction(
+        api::client_action::BeginTransaction {},
+    ))];
+    if let Some(create) = create_task_action {
+        begin.push(create);
+    }
+    begin.push(action(api::client_action::Action::AddMessagesToTask(
+        api::client_action::AddMessagesToTask {
+            task_id: task_id.clone(),
+            messages: vec![seed_assistant_message(
+                &task_id,
+                &ids.assistant_message_id,
+                &ids.request_id,
+            )],
         },
+    )));
+
+    let begin_actions = response_event(api::response_event::Type::ClientActions(
+        api::response_event::ClientActions { actions: begin },
     ));
 
     // State carried across the unfold over the upstream chunks.
@@ -704,13 +730,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chunks_to_events_errors_when_no_target_task() {
+    async fn chunks_to_events_synthesizes_create_task_when_no_target_task() {
         let upstream = stream::iter(vec![Ok(chunk("hi", true))]);
-        let events =
-            chunks_to_response_events(upstream, None, fixed_ids())
-                .collect::<Vec<_>>()
-                .await;
-        assert_eq!(events.len(), 1);
-        assert!(events[0].is_err());
+        let events = chunks_to_response_events(upstream, None, fixed_ids())
+            .collect::<Vec<_>>()
+            .await;
+        // Init, Begin+CreateTask+Add, Append, Commit, Finished
+        assert_eq!(events.len(), 5);
+        // The second event must contain a CreateTask with no parent
+        // dependencies, so the conversation state machine routes it to the
+        // root-task upgrade branch.
+        match events[1].as_ref().unwrap().r#type.as_ref().unwrap() {
+            api::response_event::Type::ClientActions(a) => {
+                assert!(matches!(
+                    a.actions[0].action.as_ref().unwrap(),
+                    api::client_action::Action::BeginTransaction(_)
+                ));
+                match a.actions[1].action.as_ref().unwrap() {
+                    api::client_action::Action::CreateTask(ct) => {
+                        let task = ct.task.as_ref().expect("task");
+                        assert!(task.dependencies.is_none());
+                        assert!(!task.id.is_empty());
+                    }
+                    _ => panic!("expected CreateTask"),
+                }
+                assert!(matches!(
+                    a.actions[2].action.as_ref().unwrap(),
+                    api::client_action::Action::AddMessagesToTask(_)
+                ));
+            }
+            _ => panic!("expected ClientActions"),
+        }
     }
 }
