@@ -10,7 +10,7 @@
 > - ❌ M0.2c GraphQL `LlmProvider::Ollama` — **N/A**: server schema has no `OLLAMA` value and Ollama is client‑routed; cynic’s `Other(String)` fallback already handles forward‑compat. Revisit only if/when the server schema adds the variant.
 > - ✅ M0.3 snapshot tests for new variants ([app/src/ai/llms_tests.rs](app/src/ai/llms_tests.rs))
 > - ✅ M1 transport module (`crates/ai/src/ollama/`) with NDJSON parser, `HttpOllamaTransport`, `list_models` / `show_model` / `chat_stream`, and tool helpers
-> - ⬜ M2 agent integration (`LocalLlmAgentEventSource`)
+> - ◐ M2 agent integration: `LlmChatTransport` trait + `ServerApiChatTransport` adapter landed; `LocalOllamaChatTransport` is a stub. Routing function exists but is not wired into call sites yet — wires up with M3.
 > - ⬜ M3 settings & discovery
 > - ⬜ M4–M7 UX, telemetry, integration tests, rollout
 
@@ -190,17 +190,41 @@ pub trait OllamaTransport: Send + Sync + 'static {
 
 ### 4.3 Agent integration seam
 
-Introduce `LocalLlmAgentEventSource` implementing the existing `AgentEventSource` trait ([app/src/ai/agent_events](app/src/ai)).
+> **Architecture correction.** An earlier draft of this plan assumed the
+> existing `AgentEventSource` trait
+> ([app/src/ai/agent_events/driver.rs](app/src/ai/agent_events/driver.rs#L97))
+> was the chat‑completion seam. It is not — that trait drives the *ambient*
+> background‑agent loop (long‑lived run IDs, sequence cursors, server
+> persistence). The real chat‑completion call site is the direct
+> `ServerApi::generate_multi_agent_output` call inside
+> [app/src/ai/agent/api/impl.rs](app/src/ai/agent/api/impl.rs#L139), which
+> had no trait abstraction.
 
-Routing decision (built once per request):
+We introduce a small new trait, [`LlmChatTransport`](app/src/ai/agent/api/transport.rs),
+that both flavours implement:
 
 ```text
-choose_event_source(model.host):
-  DirectApi | AwsBedrock  -> ServerAgentEventSource (existing)
-  LocalOllama             -> LocalLlmAgentEventSource (new)
+LlmChatTransport::stream(api::Request) -> AIOutputStream<api::ResponseEvent>
 ```
 
-This keeps the agent loop, conversation state, MCP tool dispatch, telemetry hooks, and UI rendering **unchanged**.
+* `ServerApiChatTransport` wraps the existing `ServerApi` call — production
+  path, behaviour‑equivalent to the pre‑refactor direct call.
+* `LocalOllamaChatTransport` is the new client‑routed flavour. It currently
+  ships as a stub (returns a single error event) so the trait shape is
+  reviewable and tests can drive it; the full
+  `warp_multi_agent_api::Request` ↔ Ollama `/api/chat` translation matrix
+  is the body of M2 follow‑up work.
+
+Routing decision (built once per request via `chat_transport_for_host`):
+
+```text
+choose_chat_transport(model.host):
+  DirectApi | AwsBedrock | None  -> ServerApiChatTransport (existing)
+  LocalOllama                    -> LocalOllamaChatTransport (new)
+```
+
+This keeps the agent loop, conversation state, MCP tool dispatch, telemetry
+hooks, and UI rendering **unchanged**.
 
 ### 4.4 Settings & secrets
 
@@ -290,10 +314,11 @@ Tasks are sized to be independently reviewable. Dependencies are noted.
 
 ### Milestone 2 — Agent integration (depends on M1)
 
-- [ ] **T2.1** Implement `LocalLlmAgentEventSource` adapting `OllamaTransport` to `AgentEventSource`.
-- [ ] **T2.2** Routing function that picks `EventSource` based on `LLMModelHost`.
-- [ ] **T2.3** Threading: ensure local transport runs on a non‑blocking executor; cancellation on user stop.
-- [ ] **T2.4** Tests using `FakeOllamaTransport` driving the existing agent loop.
+- [x] **T2.1** Introduce `LlmChatTransport` trait, refactor existing call site through `ServerApiChatTransport` (zero behaviour change), add `LocalOllamaChatTransport` stub. _(landed in [app/src/ai/agent/api/transport.rs](app/src/ai/agent/api/transport.rs); call site updated in [app/src/ai/agent/api/impl.rs](app/src/ai/agent/api/impl.rs#L141))_
+- [x] **T2.2** Routing function `chat_transport_for_host` that picks transport based on `LLMModelHost`. _(present but not yet wired into call sites — wires up with M3 once `AvailableLLMs` populates `LocalOllama` host configs)_
+- [ ] **T2.3** Translate `warp_multi_agent_api::Request` (multi‑agent input, settings, tools) into Ollama `/api/chat` request shape, and translate Ollama `ChatStreamChunk`s back into `api::ResponseEvent`s (`Init`, `ClientActions` for tool calls, `Finished`). Largest remaining piece; deserves its own PR with a recorded‑fixture test matrix.
+- [ ] **T2.4** Cancellation: ensure dropping the returned stream aborts the in‑flight Ollama HTTP request. (Trait contract documented; impl in T2.3.)
+- [x] **T2.5** Tests covering the trait shape and the stub: `local_ollama_stub_returns_single_error_event`, `fake_transport_round_trips_a_response_event` (in [app/src/ai/agent/api/transport.rs](app/src/ai/agent/api/transport.rs)).
 
 ### Milestone 3 — Settings & discovery (depends on M1)
 
