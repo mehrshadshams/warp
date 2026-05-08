@@ -20,6 +20,7 @@ fn request_params_with_ask_user_question_enabled(ask_user_question_enabled: bool
         session_context: SessionContext::new_for_test(),
         model: model.clone(),
         model_host: None,
+        ollama_config: None,
         coding_model: model.clone(),
         cli_agent_model: model.clone(),
         computer_use_model: model,

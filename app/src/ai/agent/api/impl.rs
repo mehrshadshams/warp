@@ -57,6 +57,17 @@ pub async fn generate_multi_agent_output(
         api_keys.allow_use_of_warp_credits = params.allow_use_of_warp_credits_with_byok;
     }
 
+    // Snapshot the bare Ollama model tag before `params.model` is consumed by
+    // `.into()` below. Used only when the request is routed to the local
+    // Ollama transport.
+    let ollama_model_tag: Option<String> =
+        if matches!(params.model_host, Some(crate::ai::llms::LLMModelHost::LocalOllama)) {
+            let s: String = params.model.clone().into();
+            Some(s.strip_prefix("ollama:").unwrap_or(&s).to_string())
+        } else {
+            None
+        };
+
     let request = api::Request {
         task_context: Some(api::request::TaskContext {
             tasks: params.tasks,
@@ -137,7 +148,32 @@ pub async fn generate_multi_agent_output(
         mcp_context: params.mcp_context.map(Into::into),
     };
 
-    let transport = chat_transport_for_host(params.model_host.as_ref(), server_api);
+    // Build the Ollama transport pair lazily when the request is routed to
+    // a local Ollama daemon. The bare model tag is the part after the
+    // `ollama:` provider prefix used by [`crate::ai::ollama_discovery`].
+    let ollama_pair = match (params.model_host.as_ref(), params.ollama_config.as_ref(), ollama_model_tag) {
+        (Some(crate::ai::llms::LLMModelHost::LocalOllama), Some(config), Some(model_tag)) => {
+            match ::ai::ollama::transport::HttpOllamaTransport::new(config.clone()) {
+                Ok(t) => Some((
+                    std::sync::Arc::new(t) as std::sync::Arc<dyn ::ai::ollama::OllamaTransport>,
+                    model_tag,
+                )),
+                Err(e) => {
+                    log::warn!(
+                        "Failed to construct HttpOllamaTransport, falling back to server: {e}"
+                    );
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
+    let transport = chat_transport_for_host(
+        params.model_host.as_ref(),
+        ollama_pair,
+        server_api,
+    );
     let response_stream = transport.stream(request).await;
     match response_stream {
         Ok(stream) => {

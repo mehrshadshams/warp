@@ -2,6 +2,7 @@ pub(crate) mod convert_conversation;
 mod convert_from;
 mod convert_to;
 mod r#impl;
+mod ollama_translate;
 mod transport;
 
 pub use ai::agent::convert::ConvertToAPITypeError;
@@ -28,6 +29,7 @@ use crate::{
     ai::{
         blocklist::SessionContext,
         llms::{LLMId, LLMModelHost, LLMPreferences},
+        ollama_discovery::ollama_config_from_settings,
     },
     server::server_api::AIApiError,
 };
@@ -113,6 +115,10 @@ pub struct RequestParams {
     /// by a client-side Ollama transport and never reaches Warp's backend.
     /// `None` falls back to the server transport.
     pub model_host: Option<LLMModelHost>,
+    /// Validated Ollama config snapshot, populated when `model_host` is
+    /// `Some(LocalOllama)`. Read at request-build time so the async transport
+    /// doesn't need an [`AppContext`].
+    pub ollama_config: Option<::ai::ollama::OllamaConfig>,
     #[allow(unused)]
     pub coding_model: LLMId,
     pub cli_agent_model: LLMId,
@@ -323,6 +329,21 @@ impl RequestParams {
                 }
             });
 
+        // Snapshot the Ollama config now (settings + env override) so the
+        // async transport can run without grabbing the AppContext.
+        let ollama_config = if matches!(model_host, Some(LLMModelHost::LocalOllama)) {
+            match ollama_config_from_settings(ai_settings) {
+                Some(Ok(cfg)) => Some(cfg),
+                Some(Err(e)) => {
+                    log::warn!("Ollama settings invalid for request: {e}");
+                    None
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+
         Self {
             input: request_input.all_inputs().cloned().collect(),
             conversation_token: conversation.server_conversation_token,
@@ -335,6 +356,7 @@ impl RequestParams {
             session_context,
             model: request_input.model_id.clone(),
             model_host,
+            ollama_config,
             coding_model: request_input.coding_model_id.clone(),
             cli_agent_model: request_input.cli_agent_model_id.clone(),
             computer_use_model: request_input.computer_use_model_id.clone(),
